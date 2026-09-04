@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1C2A24">
+<meta name="color-scheme" content="dark">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="差">
+<meta name="robots" content="noindex, nofollow, noarchive">
+<title>差は静止していない</title>
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@500;700&family=Zen+Kaku+Gothic+New:wght@400;500&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+
+<main id="scroll" class="scroll">
+  <header class="hero">
+    <span class="tick"></span>
+    <h1>差は静止していない。<br>追いかけている間も開いている。</h1>
+    <p>やる気が出ない朝に開く。上から読まなくていい。一本引くか、効く節だけ見る。</p>
+  </header>
+
+  <div id="list" class="list"></div>
+
+  <p id="empty" class="empty" hidden>まだ一本もない。右下の ＋ から足す。</p>
+
+  <footer class="foot">
+    <span id="stat"></span>
+  </footer>
+</main>
+
+<!-- 片手で届く固定バー -->
+<nav class="bar" aria-label="操作">
+  <button id="btn-draw" class="bar-draw" type="button">今日の一本を引く</button>
+  <button id="btn-add" class="bar-icon" type="button" aria-label="一言を追加">＋</button>
+  <button id="btn-menu" class="bar-icon" type="button" aria-label="メニュー">≡</button>
+</nav>
+
+<!-- 引いた一本 -->
+<div id="draw" class="draw" hidden>
+  <div class="draw-inner">
+    <span class="draw-sec" id="draw-sec"></span>
+    <p class="draw-body" id="draw-body"></p>
+    <p class="draw-note" id="draw-note"></p>
+  </div>
+  <div class="draw-bar">
+    <button id="draw-again" class="btn-primary" type="button">もう一本</button>
+    <button id="draw-close" class="btn-ghost" type="button">閉じる</button>
+  </div>
+</div>
+
+<!-- 汎用ボトムシート -->
+<div id="scrim" class="scrim" hidden></div>
+
+<section id="sheet" class="sheet" hidden aria-modal="true" role="dialog">
+  <div class="sheet-grab"></div>
+  <div class="sheet-head">
+    <h2 id="sheet-title">　</h2>
+    <button id="sheet-close" class="sheet-x" type="button" aria-label="閉じる">×</button>
+  </div>
+  <div id="sheet-body" class="sheet-body"></div>
+  <div id="sheet-foot" class="sheet-foot"></div>
+</section>
+
+<div id="toast" class="toast" hidden></div>
+
+<input id="file" type="file" accept="application/json,.json" hidden>
+
+<script src="seed.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
