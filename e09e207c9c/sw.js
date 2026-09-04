@@ -1,6 +1,6 @@
 /* 差は静止していない — Service Worker
    アプリ本体は完全オフライン。AI生成のときだけネットに出る。 */
-var VERSION = 'pl-v1';
+var VERSION = 'pl-v2';
 var SHELL = VERSION + '-shell';
 var FONTS = VERSION + '-fonts';
 

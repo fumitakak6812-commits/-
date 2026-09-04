@@ -44,7 +44,15 @@
           createdAt: now(), updatedAt: now()
         };
       }),
-      settings: { apiKey: '', model: 'claude-opus-5', effort: 'medium' }
+      settings: defaultSettings()
+    };
+  }
+
+  function defaultSettings() {
+    return {
+      provider: 'manual',
+      apiKey: '', model: 'claude-opus-5', effort: 'medium',
+      geminiKey: '', geminiModel: 'gemini-2.5-flash'
     };
   }
 
@@ -73,10 +81,19 @@
       });
     });
     var s = d.settings || {};
+    var def = defaultSettings();
+    var prov = s.provider;
+    if (prov !== 'manual' && prov !== 'anthropic' && prov !== 'gemini') {
+      // 方式を持たない古い保存データ：キーがあるなら Anthropic を使っていたはず
+      prov = (typeof s.apiKey === 'string' && s.apiKey) ? 'anthropic' : def.provider;
+    }
     out.settings = {
+      provider: prov,
       apiKey: typeof s.apiKey === 'string' ? s.apiKey : '',
-      model: s.model || 'claude-opus-5',
-      effort: s.effort || 'medium'
+      model: s.model || def.model,
+      effort: s.effort || def.effort,
+      geminiKey: typeof s.geminiKey === 'string' ? s.geminiKey : '',
+      geminiModel: s.geminiModel || def.geminiModel
     };
     return out;
   }
@@ -406,6 +423,17 @@
       data.sections.map(function (s) { return s.name; }).join(' / '));
   }
 
+  function buildUser() {
+    var existing = data.lines.slice(-40).map(function (l) { return '- ' + l.body; }).join('\n');
+    return '新しい一言を4件つくってください。\n' +
+      '今日の日付は ' + new Date().toLocaleDateString('ja-JP') + ' です。\n\n' +
+      'すでに手元にあるもの（内容・言い回しが重ならないように）：\n' + existing;
+  }
+
+  function fullPrompt() {
+    return buildSystem() + '\n\n----------\n\n' + buildUser();
+  }
+
   function extractJsonArray(text) {
     var s = text.indexOf('[');
     var e = text.lastIndexOf(']');
@@ -413,23 +441,50 @@
     return JSON.parse(text.slice(s, e + 1));
   }
 
-  function callClaude() {
+  function toCandidates(arr) {
+    if (!Array.isArray(arr) || !arr.length) throw new Error('候補が空だった');
+    var out = arr.filter(function (o) { return o && o.body; }).map(function (o) {
+      var sec = data.sections.filter(function (s) { return s.name === o.section; })[0];
+      return {
+        body: String(o.body).trim(),
+        note: String(o.note || '').trim(),
+        sectionId: sec ? sec.id : data.sections[0].id
+      };
+    });
+    if (!out.length) throw new Error('本文のある候補がなかった');
+    return out;
+  }
+
+  // 通信まわりの共通の後始末。タイムアウトと CORS/圏外を人の言葉にする。
+  function withTimeout(ms) {
+    var ctrl = new AbortController();
+    var timer = setTimeout(function () { ctrl.abort(); }, ms);
+    return {
+      signal: ctrl.signal,
+      done: function (p) {
+        return p.then(function (v) { clearTimeout(timer); return v; },
+                      function (e) {
+                        clearTimeout(timer);
+                        if (e.name === 'AbortError') throw new Error('時間切れ。電波の良いところでもう一度。');
+                        if (e instanceof TypeError) {
+                          throw new Error('通信に失敗した。ネットワークか、ブラウザ側で弾かれている。' +
+                                          '続くようなら 設定 で「コピペ」方式に切り替えれば確実に使える。');
+                        }
+                        throw e;
+                      });
+      }
+    };
+  }
+
+  function callAnthropic() {
     var key = (data.settings.apiKey || '').trim();
-    if (!key) return Promise.reject(new Error('APIキーが未設定。メニュー → 設定 から入れる。'));
+    if (!key) return Promise.reject(new Error('Anthropic の APIキーが未設定。メニュー → 設定 から入れる。'));
     if (!navigator.onLine) return Promise.reject(new Error('オフライン。AI生成だけはネットが要る。'));
 
-    var existing = data.lines.slice(-40).map(function (l) { return '- ' + l.body; }).join('\n');
-    var user =
-      '新しい一言を4件つくってください。\n' +
-      '今日の日付は ' + new Date().toLocaleDateString('ja-JP') + ' です。\n\n' +
-      'すでに手元にあるもの（内容・言い回しが重ならないように）：\n' + existing;
-
-    var ctrl = new AbortController();
-    var timer = setTimeout(function () { ctrl.abort(); }, 180000);
-
-    return fetch('https://api.anthropic.com/v1/messages', {
+    var t = withTimeout(180000);
+    return t.done(fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      signal: ctrl.signal,
+      signal: t.signal,
       headers: {
         'content-type': 'application/json',
         'x-api-key': key,
@@ -441,44 +496,168 @@
         max_tokens: 8000,
         output_config: { effort: data.settings.effort || 'medium' },
         system: buildSystem(),
-        messages: [{ role: 'user', content: user }]
+        messages: [{ role: 'user', content: buildUser() }]
       })
     }).then(function (res) {
-      return res.text().then(function (t) {
+      return res.text().then(function (raw) {
         var json = null;
-        try { json = JSON.parse(t); } catch (e) {}
+        try { json = JSON.parse(raw); } catch (e) {}
         if (!res.ok) {
           var m = (json && json.error && json.error.message) || ('HTTP ' + res.status);
           if (res.status === 401) m = 'APIキーが違うか無効。設定を見直す。';
           if (res.status === 429) m = 'レート制限。少し待ってからもう一度。';
-          if (res.status === 400 && /credit|balance/i.test(m)) m = 'APIの残高不足かもしれない。';
+          if (res.status === 400 && /credit|balance/i.test(m)) {
+            m = 'クレジット残高が足りない。console.anthropic.com の Billing でチャージする。';
+          }
           throw new Error(m);
         }
         if (json.stop_reason === 'refusal') throw new Error('生成が拒否された。もう一度試す。');
         var text = (json.content || [])
           .filter(function (b) { return b.type === 'text'; })
           .map(function (b) { return b.text; }).join('');
-        var arr = extractJsonArray(text);
-        if (!Array.isArray(arr) || !arr.length) throw new Error('候補が空だった');
-        return arr.filter(function (o) { return o && o.body; }).map(function (o) {
-          var sec = data.sections.filter(function (s) { return s.name === o.section; })[0];
-          return {
-            body: String(o.body).trim(),
-            note: String(o.note || '').trim(),
-            sectionId: sec ? sec.id : data.sections[0].id
-          };
-        });
+        return toCandidates(extractJsonArray(text));
       });
-    }).catch(function (err) {
-      if (err.name === 'AbortError') throw new Error('時間切れ。電波の良いところでもう一度。');
-      if (err instanceof TypeError) throw new Error('通信に失敗した。ネットワークを確認する。');
-      throw err;
-    }).then(function (r) { clearTimeout(timer); return r; },
-            function (e) { clearTimeout(timer); throw e; });
+    }));
+  }
+
+  function callGemini() {
+    var key = (data.settings.geminiKey || '').trim();
+    if (!key) return Promise.reject(new Error('Gemini の APIキーが未設定。メニュー → 設定 から入れる。'));
+    if (!navigator.onLine) return Promise.reject(new Error('オフライン。AI生成だけはネットが要る。'));
+
+    var model = (data.settings.geminiModel || 'gemini-2.5-flash').trim();
+    var t = withTimeout(180000);
+    return t.done(fetch(
+      'https://generativelanguage.googleapis.com/v1beta/models/' +
+      encodeURIComponent(model) + ':generateContent', {
+        method: 'POST',
+        signal: t.signal,
+        headers: { 'content-type': 'application/json', 'x-goog-api-key': key },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: buildSystem() }] },
+          contents: [{ role: 'user', parts: [{ text: buildUser() }] }],
+          generationConfig: { responseMimeType: 'application/json', temperature: 1 }
+        })
+      }
+    ).then(function (res) {
+      return res.text().then(function (raw) {
+        var json = null;
+        try { json = JSON.parse(raw); } catch (e) {}
+        if (!res.ok) {
+          var m = (json && json.error && json.error.message) || ('HTTP ' + res.status);
+          if (res.status === 400 && /API key/i.test(m)) m = 'APIキーが違うか無効。設定を見直す。';
+          if (res.status === 403) m = 'このキーでは使えない。AI Studio でキーを作り直す。';
+          if (res.status === 404) m = 'モデル名 "' + model + '" が見つからない。設定でモデル名を直す。';
+          if (res.status === 429) m = 'レート制限。無料枠の上限かもしれない。少し待つ。';
+          throw new Error(m);
+        }
+        var fb = json.promptFeedback;
+        if (fb && fb.blockReason) throw new Error('生成がブロックされた（' + fb.blockReason + '）。');
+        var cand = (json.candidates || [])[0];
+        if (!cand) throw new Error('候補が返ってこなかった。');
+        var text = ((cand.content && cand.content.parts) || [])
+          .map(function (p) { return p.text || ''; }).join('');
+        if (!text) throw new Error('本文が空だった（' + (cand.finishReason || '理由不明') + '）。');
+        return toCandidates(extractJsonArray(text));
+      });
+    }));
+  }
+
+  function generate() {
+    if (data.settings.provider === 'gemini') return callGemini();
+    return callAnthropic();
+  }
+
+  function copyPrompt(onFallback) {
+    var text = fullPrompt();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(function () {
+        toast('コピーした。Claude か Gemini に貼る。');
+      }, function () { onFallback(); });
+    } else { onFallback(); }
   }
 
   function openAI() {
-    var state = { loading: false, error: '', cands: [], picked: {} };
+    var state = { loading: false, error: '', cands: [], picked: {}, showPrompt: false };
+    var pasted = '';
+
+    function isManual() { return data.settings.provider === 'manual'; }
+
+    function countPicked() {
+      return Object.keys(state.picked).filter(function (k) { return state.picked[k]; }).length;
+    }
+    function refreshFoot() { buildFoot($('#sheet-foot')); }
+
+    function reset() {
+      state.cands = []; state.picked = {}; state.error = ''; pasted = '';
+      paint();
+    }
+
+    function loadPasted() {
+      if (!pasted.trim()) { toast('結果を貼り付ける'); return; }
+      try {
+        state.cands = toCandidates(extractJsonArray(pasted));
+        state.picked = {};
+        state.error = '';
+      } catch (e) {
+        state.error = '読み取れなかった：' + e.message +
+          '\nJSON の [ から ] までを、そのまま貼り付ける。';
+      }
+      paint();
+    }
+
+    function run() {
+      state.loading = true; state.error = ''; state.cands = []; state.picked = {};
+      paint();
+      generate().then(function (cands) {
+        state.loading = false; state.cands = cands; paint();
+      }).catch(function (err) {
+        state.loading = false; state.error = err.message || String(err); paint();
+      });
+    }
+
+    function paintManualForm(c) {
+      c.appendChild(hint(
+        'キーなしで使う方式。プロンプトをコピーして Claude や Gemini のアプリに貼り、' +
+        '返ってきた JSON をそのまま下の欄に貼り戻す。'
+      ));
+
+      var copy = btn('btn-primary', 'プロンプトをコピー', function () {
+        copyPrompt(function () {
+          state.showPrompt = true;
+          paint();
+          toast('コピーできなかった。下の文を手で選んで。');
+        });
+      });
+      copy.style.width = '100%';
+      c.appendChild(copy);
+
+      var toggle = btn('btn-ghost', state.showPrompt ? 'プロンプトを隠す' : 'プロンプトを見る', function () {
+        state.showPrompt = !state.showPrompt;
+        paint();
+      });
+      toggle.style.width = '100%';
+      toggle.style.marginTop = '.5rem';
+      c.appendChild(toggle);
+
+      if (state.showPrompt) {
+        var pv = el('textarea', 'note');
+        pv.readOnly = true;
+        pv.rows = 8;
+        pv.value = fullPrompt();
+        pv.style.marginTop = '.8rem';
+        c.appendChild(pv);
+      }
+
+      var ta = el('textarea', 'note');
+      ta.rows = 5;
+      ta.placeholder = '[{"body":"...","note":"...","section":"..."}, ...]';
+      ta.value = pasted;
+      ta.addEventListener('input', function () { pasted = ta.value; });
+      var f = field('返ってきた JSON を貼る', ta);
+      f.style.marginTop = '1.3rem';
+      c.appendChild(f);
+    }
 
     function paint() {
       openSheet('AIで追加', function (c) {
@@ -492,9 +671,14 @@
         }
 
         if (!state.cands.length) {
+          if (isManual()) { paintManualForm(c); return; }
+          var name = data.settings.provider === 'gemini' ? 'Gemini' : 'Claude';
+          var hasKey = data.settings.provider === 'gemini'
+            ? !!(data.settings.geminiKey || '').trim()
+            : !!(data.settings.apiKey || '').trim();
           c.appendChild(hint(
-            'Claude に4件つくらせる。出てきたものを見て、採用するものだけ選んで保存する。' +
-            '自動では保存しない。' + (data.settings.apiKey ? '' : '\n\nAPIキーが未設定。先に 設定 で入れる。')
+            name + ' に4件つくらせる。出てきたものを見て、採用するものだけ選んで保存する。' +
+            '自動では保存しない。' + (hasKey ? '' : '\n\nAPIキーが未設定。先に 設定 で入れる。')
           ));
           return;
         }
@@ -519,22 +703,17 @@
       }, buildFoot);
     }
 
-    function countPicked() {
-      return Object.keys(state.picked).filter(function (k) { return state.picked[k]; }).length;
-    }
-
-    function refreshFoot() { buildFoot($('#sheet-foot')); }
-
     function buildFoot(f) {
       f.textContent = '';
       if (state.loading) { f.appendChild(btn('btn-ghost', 'キャンセル', closeSheet)); return; }
 
       if (!state.cands.length) {
         f.appendChild(btn('btn-ghost', '閉じる', closeSheet));
-        f.appendChild(btn('btn-primary', '生成する', run));
+        f.appendChild(btn('btn-primary', isManual() ? '読み込む' : '生成する', isManual() ? loadPasted : run));
         return;
       }
-      f.appendChild(btn('btn-ghost', 'もう一度生成', run));
+
+      f.appendChild(btn('btn-ghost', isManual() ? 'やり直す' : 'もう一度生成', isManual() ? reset : run));
       var n = countPicked();
       var sv = btn('btn-primary', n ? n + '件を保存' : '保存', function () {
         var added = 0;
@@ -553,69 +732,119 @@
       f.appendChild(sv);
     }
 
-    function run() {
-      state.loading = true; state.error = ''; state.cands = []; state.picked = {};
-      paint();
-      callClaude().then(function (cands) {
-        state.loading = false;
-        state.cands = cands;
-        paint();
-      }).catch(function (err) {
-        state.loading = false;
-        state.error = err.message || String(err);
-        paint();
-      });
-    }
-
     paint();
   }
 
   /* ---------------- settings ---------------- */
   function openSettings() {
-    var keyInput, modelSel, effSel;
-    openSheet('設定', function (c) {
-      keyInput = el('input');
-      keyInput.type = 'password';
-      keyInput.autocomplete = 'off';
-      keyInput.placeholder = 'sk-ant-...';
-      keyInput.value = data.settings.apiKey || '';
-      c.appendChild(field('Anthropic APIキー', keyInput));
+    var provSel, groups = {}, aKey, aModel, aEffort, gKey, gModel;
+
+    function showGroup() {
+      Object.keys(groups).forEach(function (k) {
+        groups[k].hidden = k !== provSel.value;
+      });
+    }
+
+    function keyField(labelText, value, hintText) {
+      var wrap = el('div');
+      var inp = el('input');
+      inp.type = 'password';
+      inp.autocomplete = 'off';
+      inp.autocapitalize = 'off';
+      inp.spellcheck = false;
+      inp.value = value || '';
+      wrap.appendChild(field(labelText, inp));
 
       var show = el('label', 'f');
       var cb = el('input'); cb.type = 'checkbox';
       cb.style.width = 'auto'; cb.style.height = 'auto'; cb.style.marginRight = '.5rem';
-      cb.addEventListener('change', function () { keyInput.type = cb.checked ? 'text' : 'password'; });
-      var sp = el('span'); sp.style.display = 'inline'; sp.style.letterSpacing = '0';
-      sp.style.fontSize = '.78rem'; sp.textContent = 'キーを表示';
+      cb.addEventListener('change', function () { inp.type = cb.checked ? 'text' : 'password'; });
+      var sp = el('span');
+      sp.style.display = 'inline'; sp.style.letterSpacing = '0'; sp.style.fontSize = '.78rem';
+      sp.textContent = 'キーを表示';
       show.appendChild(cb); show.appendChild(sp);
-      c.appendChild(show);
+      wrap.appendChild(show);
+      if (hintText) wrap.appendChild(hint(hintText));
+      return { wrap: wrap, input: inp };
+    }
 
-      c.appendChild(hint(
-        'キーはこの端末のブラウザにだけ保存される。通信はブラウザから直接 Anthropic へ送られる（サーバーは経由しない）。' +
-        'console.anthropic.com で発行する。'
+    openSheet('設定', function (c) {
+      provSel = el('select');
+      [['manual', 'コピペ（無料・キー不要）'],
+       ['anthropic', 'Anthropic Claude（有料）'],
+       ['gemini', 'Google Gemini（無料枠あり）']].forEach(function (m) {
+        var o = el('option'); o.value = m[0]; o.textContent = m[1]; provSel.appendChild(o);
+      });
+      provSel.value = data.settings.provider || 'manual';
+      provSel.addEventListener('change', showGroup);
+      c.appendChild(field('「AIで追加」の方式', provSel));
+
+      /* --- コピペ --- */
+      groups.manual = el('div');
+      groups.manual.appendChild(hint(
+        'キーもお金も要らない。アプリがプロンプトを組み立ててコピーするので、' +
+        'それを Claude や Gemini のアプリに貼り、返ってきた JSON を貼り戻す。' +
+        '個人的な内容が API 事業者の学習に回らないのもこの方式だけ。'
       ));
+      c.appendChild(groups.manual);
 
-      modelSel = el('select');
+      /* --- Anthropic --- */
+      groups.anthropic = el('div');
+      var a = keyField('Anthropic APIキー', data.settings.apiKey,
+        'console.anthropic.com の API keys で発行する。従量課金で、無料枠はない。' +
+        'Claude Pro / Max の契約とは別会計なので、Billing でクレジットを買う必要がある。' +
+        '1回の生成でおよそ $0.03。キーはこの端末にだけ保存され、書き出す JSON には含まれない。');
+      aKey = a.input;
+      groups.anthropic.appendChild(a.wrap);
+
+      aModel = el('select');
       [['claude-opus-5', 'Claude Opus 5（既定・いちばん効く）'],
        ['claude-sonnet-5', 'Claude Sonnet 5（速くて安い）'],
        ['claude-haiku-4-5', 'Claude Haiku 4.5（最速・最安）']].forEach(function (m) {
-        var o = el('option'); o.value = m[0]; o.textContent = m[1]; modelSel.appendChild(o);
+        var o = el('option'); o.value = m[0]; o.textContent = m[1]; aModel.appendChild(o);
       });
-      modelSel.value = data.settings.model || 'claude-opus-5';
-      c.appendChild(field('モデル', modelSel));
+      aModel.value = data.settings.model || 'claude-opus-5';
+      groups.anthropic.appendChild(field('モデル', aModel));
 
-      effSel = el('select');
+      aEffort = el('select');
       [['low', '低（速い）'], ['medium', '中（既定）'], ['high', '高（じっくり）']].forEach(function (m) {
-        var o = el('option'); o.value = m[0]; o.textContent = m[1]; effSel.appendChild(o);
+        var o = el('option'); o.value = m[0]; o.textContent = m[1]; aEffort.appendChild(o);
       });
-      effSel.value = data.settings.effort || 'medium';
-      c.appendChild(field('生成の深さ', effSel));
+      aEffort.value = data.settings.effort || 'medium';
+      groups.anthropic.appendChild(field('生成の深さ', aEffort));
+      c.appendChild(groups.anthropic);
+
+      /* --- Gemini --- */
+      groups.gemini = el('div');
+      var g = keyField('Gemini APIキー', data.settings.geminiKey,
+        'aistudio.google.com の「Get API key」で無料で発行できる。カード登録も不要。' +
+        'ただし無料枠では、送った内容が Google のモデル改善に使われる。' +
+        'ここで送るのは年収や家庭の事情を含む前提なので、それが嫌なら「コピペ」を選ぶ。');
+      gKey = g.input;
+      groups.gemini.appendChild(g.wrap);
+
+      gModel = el('input');
+      gModel.type = 'text';
+      gModel.autocapitalize = 'off';
+      gModel.spellcheck = false;
+      gModel.value = data.settings.geminiModel || 'gemini-2.5-flash';
+      groups.gemini.appendChild(field('モデル名', gModel));
+      groups.gemini.appendChild(hint(
+        'AI Studio で使えるモデル名をそのまま書く。モデル名は入れ替わるので、' +
+        '404 が出たら AI Studio で今あるものに書き換える。'
+      ));
+      c.appendChild(groups.gemini);
+
+      showGroup();
     }, function (f) {
       f.appendChild(btn('btn-ghost', 'キャンセル', closeSheet));
       f.appendChild(btn('btn-primary', '保存', function () {
-        data.settings.apiKey = keyInput.value.trim();
-        data.settings.model = modelSel.value;
-        data.settings.effort = effSel.value;
+        data.settings.provider = provSel.value;
+        data.settings.apiKey = aKey.value.trim();
+        data.settings.model = aModel.value;
+        data.settings.effort = aEffort.value;
+        data.settings.geminiKey = gKey.value.trim();
+        data.settings.geminiModel = gModel.value.trim() || 'gemini-2.5-flash';
         save(); closeSheet(); toast('設定を保存した');
       }));
     });
@@ -704,14 +933,14 @@
   /* ---------------- menu ---------------- */
   function openMenu() {
     openSheet('メニュー', function (c) {
-      c.appendChild(row('✦', 'AIで追加', 'Claude に4件つくらせて、選んで保存', openAI));
+      c.appendChild(row('✦', 'AIで追加', '4件つくらせて、選んだものだけ保存', openAI));
       c.appendChild(row('§', '節の管理', '追加・並べ替え・名前の変更・削除', openSections));
       c.appendChild(row('↓', 'JSONで書き出し', '機種変更のとき用', exportJson));
       c.appendChild(row('↑', 'JSONを読み込み（追加）', '今のデータに足す', function () { importJson('merge'); }));
       c.appendChild(row('⇄', 'JSONを読み込み（置き換え）', '今のデータを捨てて入れ替える', function () {
         if (confirm('今のデータを全部捨てて、ファイルの内容に置き換える。いい？')) importJson('replace');
       }, true));
-      c.appendChild(row('⚙', '設定', 'APIキー・モデル', openSettings));
+      c.appendChild(row('⚙', '設定', '生成の方式・APIキー・モデル', openSettings));
       c.appendChild(hint('保存先はこの端末のブラウザ。アプリを消すと消える。たまに書き出しておく。'));
     }, function (f) {
       f.appendChild(btn('btn-ghost', '閉じる', closeSheet));
