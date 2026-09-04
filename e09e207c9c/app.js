@@ -7,6 +7,7 @@
 
   var KEY = 'pl.data.v1';
   var APP_VERSION = 1;
+  var BUILD = 'v3';
 
   /* ---------------- utils ---------------- */
   var $ = function (s) { return document.querySelector(s); };
@@ -165,7 +166,7 @@
     });
 
     $('#empty').hidden = total > 0;
-    $('#stat').textContent = total + '本 / ' + data.sections.length + '節';
+    $('#stat').textContent = total + '本 / ' + data.sections.length + '節 · ' + BUILD;
     $('#btn-draw').disabled = total === 0;
   }
 
@@ -974,9 +975,29 @@
   } catch (e) { /* 古いブラウザ */ }
 
   /* ---------------- service worker ---------------- */
+  // 新しい版が出ていたら黙って入れ替える。
+  // これを入れないと「2回開き直すまで古いまま」になる。
   if ('serviceWorker' in navigator) {
+    var hadController = !!navigator.serviceWorker.controller;
+    var reloading = false;
+
+    navigator.serviceWorker.addEventListener('controllerchange', function () {
+      // 初回登録の claim は読み直す必要がない（すでに新しいものを読んでいる）。
+      // ただしフラグはここで立てる。同じ画面のまま次の更新が来たら読み直す。
+      if (!hadController) { hadController = true; return; }
+      if (reloading) return;
+      reloading = true;
+      location.reload();
+    });
+
     window.addEventListener('load', function () {
-      navigator.serviceWorker.register('sw.js').catch(function () { /* file:// など */ });
+      navigator.serviceWorker.register('sw.js').then(function (reg) {
+        reg.update();
+        // ホーム画面のアプリは終了せず残るので、前面に戻るたびに見に行く
+        document.addEventListener('visibilitychange', function () {
+          if (!document.hidden) reg.update();
+        });
+      }).catch(function () { /* file:// など */ });
     });
   }
 })();
