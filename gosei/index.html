@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no">
+<meta name="theme-color" content="#07090f">
+<meta name="robots" content="noindex,nofollow">
+<title>五星麻雀 — GOSEI</title>
+<link rel="icon" href="icons/favicon-32.png" sizes="32x32">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Shippori+Mincho+B1:wght@700;800&family=Zen+Kaku+Gothic+New:wght@500;700&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="root">
+  <header id="hud">
+    <div class="hud-l">
+      <span id="hud-kyoku">東1局</span>
+      <span id="hud-wall" class="dim">残 —</span>
+      <span id="hud-sticks" class="dim"></span>
+    </div>
+    <div class="hud-c">
+      <span class="hud-tag">ドラ</span>
+      <div id="hud-dora" class="tstrip"></div>
+      <span class="hud-tag wildtag">変化牌</span>
+      <div id="hud-wild" class="tstrip"></div>
+    </div>
+    <div class="hud-r">
+      <button id="btn-speed" class="mini-btn">×1</button>
+      <button id="btn-sound" class="mini-btn">🔊</button>
+      <button id="btn-help" class="mini-btn">?</button>
+    </div>
+  </header>
+
+  <main id="table">
+    <div class="seat pos1" id="seat1"></div>
+    <div class="seat pos2" id="seat2"></div>
+    <div class="seat pos3" id="seat3"></div>
+    <div class="seat pos4" id="seat4"></div>
+    <div id="center">
+      <div class="center-ring"></div>
+      <div class="wind-ring" id="wind-ring"></div>
+      <div class="center-body">
+        <div class="c-kyoku">東一局</div>
+        <div class="c-wall"><b id="c-wall-n">96</b><span>枚</span></div>
+        <div class="c-honba"></div>
+      </div>
+    </div>
+    <div id="pond0" class="me-pond"></div>
+  </main>
+
+  <section id="me">
+    <div class="me-row">
+      <div id="plate0" class="plate"></div>
+      <div id="info" class="info"></div>
+    </div>
+    <div id="melds-me" class="me-melds"></div>
+    <div id="hand" class="hand"></div>
+    <div id="actionbar" class="actionbar"></div>
+  </section>
+</div>
+
+<canvas id="fxc"></canvas>
+<div id="flash"></div>
+<div id="overlay"></div>
+<div id="modal" class="modal"></div>
+
+<div id="title" class="screen">
+  <div class="title-inner">
+    <div class="logo">
+      <span class="logo-k">五</span><span class="logo-k">星</span><span class="logo-k">麻</span><span class="logo-k">雀</span>
+    </div>
+    <div class="logo-sub">GOSEI MAHJONG — 五人打ち・四種の数牌・変化牌</div>
+    <ul class="pitch">
+      <li><b>5人打ち</b>。5つ目の風「<span class="hi">星</span>」の席がある</li>
+      <li><b>星子</b>（★の1〜9）という4つ目の数牌。全 176 枚</li>
+      <li><b>ドラはそのまま変化牌</b>。何の牌としても使える</li>
+      <li>三色は四色になり、<b>四色同順は役満</b></li>
+    </ul>
+    <button id="btn-start" class="act act-start">対局開始</button>
+    <div class="tiny">東風戦・5局／持ち点 25000</div>
+  </div>
+</div>
+
+<div id="help" class="screen">
+  <div class="help-inner">
+    <h2>五星麻雀のルール</h2>
+    <h3>牌</h3>
+    <p>萬子・筒子・索子に加えて <b>星子（★1〜9）</b> がある。字牌は
+      <b>東・南・西・北・星</b> の5風と白發中。合わせて 44 種 × 4 枚 = <b>176 枚</b>。</p>
+    <h3>変化牌（ドラ）</h3>
+    <p>各局のドラ表示牌の次の牌が <b>変化牌</b>。ドラ1枚ぶんの価値がありつつ、
+      <b>どの牌としても使える</b>。手の中に来たら急に手が近くなる。
+      カンで増えたドラは普通のドラで、変化牌にはならない。</p>
+    <h3>席と場</h3>
+    <p>5人。自風は東南西北星。場風は常に東。東風戦5局で親が一周する。</p>
+    <h3>この麻雀だけの役</h3>
+    <table class="ytable">
+      <tr><td>四色同順</td><td>役満</td><td>同じ並びの順子を4種類の数牌すべてで</td></tr>
+      <tr><td>五風連合</td><td>役満</td><td>風牌の刻子4つ＋残る風の雀頭</td></tr>
+      <tr><td>星一色</td><td>役満</td><td>星子と字牌の「星」だけ</td></tr>
+      <tr><td>無双</td><td>役満</td><td>幺九16種のうち14種を1枚ずつ（この麻雀の国士）</td></tr>
+      <tr><td>三色同順</td><td>2飜</td><td>4種のうち3種で同じ並び</td></tr>
+    </table>
+    <p class="tiny">点数は符を使わない簡略計算（1飜1000点〜役満32000点、親は1.5倍）。</p>
+    <button class="act act-next">閉じる</button>
+  </div>
+</div>
+
+<script src="js/rules.js"></script>
+<script src="js/tiles.js"></script>
+<script src="js/fx.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/game.js"></script>
+<script>
+  Game.boot();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(function(){});
+</script>
+</body>
+</html>
